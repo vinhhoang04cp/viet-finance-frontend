@@ -72,17 +72,19 @@ export async function fetchInvoiceStatistics(
 }
 
 /**
- * Fetch the per-month invoice tax breakdown for a year
+ * Fetch the per-month invoice tax breakdown
  * (GET /api/v1/invoices/statistics/monthly?year=). Always 12 zero-filled points.
+ * Pass `year = null` to aggregate every month across all years.
  */
 export async function fetchInvoiceMonthlyStatistics(
-  year: number,
+  year: number | null,
   signal?: AbortSignal
 ): Promise<MonthlyTaxStatistics> {
-  const res = await fetch(
-    `${INVOICES_URL}/statistics/monthly?year=${year}`,
-    { cache: "no-store", signal }
-  );
+  const query = year != null ? `?year=${year}` : "";
+  const res = await fetch(`${INVOICES_URL}/statistics/monthly${query}`, {
+    cache: "no-store",
+    signal,
+  });
 
   if (!res.ok) {
     throw new Error(

@@ -26,6 +26,7 @@ import type { MonthlyTaxPoint } from "@/types/statistics";
 
 type ModuleFilter = "all" | "invoice" | "revenue";
 type StatusFilter = "all" | DocumentStatus;
+type YearFilter = number | "all";
 
 const MODULE_OPTIONS: { value: ModuleFilter; label: string }[] = [
   { value: "all", label: "Tất cả" },
@@ -47,7 +48,7 @@ export default function StatisticsDashboardPage() {
   const years = React.useMemo(() => availableYears(), []);
 
   const [module, setModule] = React.useState<ModuleFilter>("all");
-  const [year, setYear] = React.useState<number>(years[0]);
+  const [year, setYear] = React.useState<YearFilter>(years[0]);
   const [status, setStatus] = React.useState<StatusFilter>("all");
 
   const [monthly, setMonthly] = React.useState<MonthlyTaxPoint[]>(emptyMonthly());
@@ -61,19 +62,20 @@ export default function StatisticsDashboardPage() {
   React.useEffect(() => {
     const controller = new AbortController();
     const statusParam = status === "all" ? undefined : status;
+    const yearParam = year === "all" ? null : year;
 
     const load = async (): Promise<MonthlyTaxPoint[]> => {
       if (module === "invoice") {
-        return (await fetchInvoiceMonthlyStatistics(year, controller.signal)).monthly;
+        return (await fetchInvoiceMonthlyStatistics(yearParam, controller.signal)).monthly;
       }
       if (module === "revenue") {
         return (
-          await fetchRevenueMonthlyStatistics(year, statusParam, controller.signal)
+          await fetchRevenueMonthlyStatistics(yearParam, statusParam, controller.signal)
         ).monthly;
       }
       const [inv, rev] = await Promise.all([
-        fetchInvoiceMonthlyStatistics(year, controller.signal),
-        fetchRevenueMonthlyStatistics(year, statusParam, controller.signal),
+        fetchInvoiceMonthlyStatistics(yearParam, controller.signal),
+        fetchRevenueMonthlyStatistics(yearParam, statusParam, controller.signal),
       ]);
       return mergeMonthly(inv.monthly, rev.monthly);
     };
@@ -101,7 +103,7 @@ export default function StatisticsDashboardPage() {
     setLoading(true);
     setModule(next);
   }
-  function changeYear(next: number) {
+  function changeYear(next: YearFilter) {
     setLoading(true);
     setYear(next);
   }
@@ -153,10 +155,13 @@ export default function StatisticsDashboardPage() {
               <span className="text-sm font-medium text-muted-foreground">Năm:</span>
               <select
                 className={SELECT_CLASS}
-                value={year}
-                onChange={(e) => changeYear(Number(e.target.value))}
+                value={year === "all" ? "all" : String(year)}
+                onChange={(e) =>
+                  changeYear(e.target.value === "all" ? "all" : Number(e.target.value))
+                }
                 aria-label="Năm"
               >
+                <option value="all">Tất cả các năm</option>
                 {years.map((y) => (
                   <option key={y} value={y}>
                     {y}
@@ -237,7 +242,7 @@ export default function StatisticsDashboardPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
                 <BarChart3 className="h-4 w-4" />
-                Thuế theo tháng — {year}
+                Thuế theo tháng — {year === "all" ? "tất cả các năm" : year}
               </CardTitle>
             </CardHeader>
             <CardContent>

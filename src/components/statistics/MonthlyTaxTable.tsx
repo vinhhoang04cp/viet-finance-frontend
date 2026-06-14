@@ -62,7 +62,7 @@ export function MonthlyTaxTable({ data }: MonthlyTaxTableProps) {
             </TableRow>
           ))}
           <TableRow className="border-t-2 bg-muted/30 font-semibold hover:bg-muted/30">
-            <TableCell>Cả năm</TableCell>
+            <TableCell>Tổng cộng</TableCell>
             <TableCell className="text-right tabular-nums">
               {formatCurrency(total.totalTax7)}
             </TableCell>

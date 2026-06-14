@@ -19,8 +19,11 @@ export interface MonthlyTaxPoint {
   reportCount: number;
 }
 
-/** Always carries exactly 12 points (zero-filled for empty months). */
+/**
+ * Always carries exactly 12 points (zero-filled for empty months).
+ * `year` is `null` when the breakdown aggregates every month across all years.
+ */
 export interface MonthlyTaxStatistics {
-  year: number;
+  year: number | null;
   monthly: MonthlyTaxPoint[];
 }

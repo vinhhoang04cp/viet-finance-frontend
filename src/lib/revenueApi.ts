@@ -67,16 +67,18 @@ export async function fetchRevenueStatistics(
 }
 
 /**
- * Fetch the per-month revenue tax breakdown for a year, optionally filtered by
- * approval status (GET /api/v1/revenues/statistics/monthly?year=&status=).
- * Always 12 zero-filled points; the date dimension is the report period.
+ * Fetch the per-month revenue tax breakdown, optionally filtered by approval
+ * status (GET /api/v1/revenues/statistics/monthly?year=&status=). Always 12
+ * zero-filled points; the date dimension is the report period. Pass `year = null`
+ * to aggregate every month across all years.
  */
 export async function fetchRevenueMonthlyStatistics(
-  year: number,
+  year: number | null,
   status?: DocumentStatus | null,
   signal?: AbortSignal
 ): Promise<MonthlyTaxStatistics> {
-  const params = new URLSearchParams({ year: String(year) });
+  const params = new URLSearchParams();
+  if (year != null) params.set("year", String(year));
   if (status) params.set("status", status);
 
   const res = await fetch(
