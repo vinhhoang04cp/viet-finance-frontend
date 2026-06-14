@@ -4,21 +4,26 @@ import * as React from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
-  FileText,
   Loader2,
   RefreshCw,
   ScanLine,
   Sigma,
   TriangleAlert,
+  Wallet,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { InvoiceTable } from "@/components/invoices/InvoiceTable";
-import { InvoiceReviewDialog } from "@/components/invoices/InvoiceReviewDialog";
+import { RevenueTable } from "@/components/revenues/RevenueTable";
+import { RevenueReviewDialog } from "@/components/revenues/RevenueReviewDialog";
 import { TaxSummaryBar } from "@/components/statistics/TaxSummaryBar";
-import { PeriodFilter, type PeriodFilterLabels } from "@/components/filters/PeriodFilter";
-import { fetchInvoices, fetchInvoiceStatistics, updateInvoice } from "@/lib/api";
+import { PeriodFilter } from "@/components/filters/PeriodFilter";
+import {
+  fetchRevenues,
+  fetchRevenueStatistics,
+  updateRevenue,
+  updateRevenueStatus,
+} from "@/lib/revenueApi";
 import { cn, formatCurrency } from "@/lib/utils";
 import {
   ALL_PERIOD,
@@ -27,22 +32,11 @@ import {
   type Period,
 } from "@/lib/period";
 import type {
-  EditableInvoiceFields,
-  Invoice,
-  InvoiceTaxStatistics,
-} from "@/types/invoice";
+  EditableRevenueFields,
+  RevenueReport,
+  RevenueTaxStatistics,
+} from "@/types/revenue";
 
-/** English period labels — the invoice surface is intentionally still English. */
-const EN_LABELS: PeriodFilterLabels = {
-  all: "All",
-  allMonths: "Whole year",
-  months: [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  ],
-};
-
-/** Top-of-dashboard KPI card. */
 function SummaryCard({
   title,
   value,
@@ -83,38 +77,38 @@ function SummaryCard({
   );
 }
 
-export default function DashboardPage() {
-  const [invoices, setInvoices] = React.useState<Invoice[]>([]);
+export default function RevenueDashboardPage() {
+  const [reports, setReports] = React.useState<RevenueReport[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
   const [period, setPeriod] = React.useState<Period>(ALL_PERIOD);
-  const [stats, setStats] = React.useState<InvoiceTaxStatistics | null>(null);
+  const [stats, setStats] = React.useState<RevenueTaxStatistics | null>(null);
   const [statsLoading, setStatsLoading] = React.useState(true);
   const [statsError, setStatsError] = React.useState<string | null>(null);
 
   const [reloadToken, setReloadToken] = React.useState(0);
 
-  const [selected, setSelected] = React.useState<Invoice | null>(null);
+  const [selected, setSelected] = React.useState<RevenueReport | null>(null);
   const [dialogOpen, setDialogOpen] = React.useState(false);
 
   const range = React.useMemo(() => periodToRange(period), [period]);
   const { from, to } = range;
 
-  // Fetch the invoice list (re-runs on manual refresh). State is only set inside
+  // Fetch the revenue list (re-runs on manual refresh). State is only set inside
   // the async callbacks; the "loading" reset lives in the refresh handler so the
   // effect body stays free of synchronous setState (react-hooks/set-state-in-effect).
   React.useEffect(() => {
     const controller = new AbortController();
-    fetchInvoices(controller.signal)
+    fetchRevenues(controller.signal)
       .then((data) => {
-        setInvoices(data);
+        setReports(data);
         setError(null);
       })
       .catch((err: unknown) => {
         if ((err as Error).name !== "AbortError") {
           setError(
-            err instanceof Error ? err.message : "An unexpected error occurred."
+            err instanceof Error ? err.message : "Đã xảy ra lỗi không mong muốn."
           );
         }
       })
@@ -125,7 +119,7 @@ export default function DashboardPage() {
   // Fetch the server-aggregated tax statistics for the selected period.
   React.useEffect(() => {
     const controller = new AbortController();
-    fetchInvoiceStatistics(from, to, controller.signal)
+    fetchRevenueStatistics(from, to, undefined, controller.signal)
       .then((data) => {
         setStats(data);
         setStatsError(null);
@@ -133,7 +127,7 @@ export default function DashboardPage() {
       .catch((err: unknown) => {
         if ((err as Error).name !== "AbortError") {
           setStatsError(
-            err instanceof Error ? err.message : "Could not load statistics."
+            err instanceof Error ? err.message : "Không thể tải thống kê."
           );
         }
       })
@@ -153,133 +147,139 @@ export default function DashboardPage() {
     setReloadToken((t) => t + 1);
   }
 
-  // The table + KPI cards reflect the same window as the summary bar.
-  const visibleInvoices = React.useMemo(
-    () => invoices.filter((i) => isDateInPeriod(i.invoiceDate, range)),
-    [invoices, range]
+  // The table + KPI cards reflect the same window as the summary bar. A report's
+  // period date is its start date (aggregate) falling back to the print date.
+  const visibleReports = React.useMemo(
+    () =>
+      reports.filter((r) =>
+        isDateInPeriod(r.reportStartDate ?? r.reportDate, range)
+      ),
+    [reports, range]
   );
 
   const { reviewCount, totalGross } = React.useMemo(
     () => ({
-      reviewCount: visibleInvoices.filter((i) => i.requiresManualReview).length,
-      totalGross: visibleInvoices.reduce(
-        (sum, i) => sum + (i.grossAmount ?? 0),
+      reviewCount: visibleReports.filter((r) => r.requiresManualReview).length,
+      totalGross: visibleReports.reduce(
+        (sum, r) => sum + (r.grossRevenue ?? 0),
         0
       ),
     }),
-    [visibleInvoices]
+    [visibleReports]
   );
 
-  function handleSelect(invoice: Invoice) {
-    setSelected(invoice);
+  function handleSelect(report: RevenueReport) {
+    setSelected(report);
     setDialogOpen(true);
   }
 
-  // Save field corrections (PATCH). The backend re-validates and recomputes
-  // `requiresManualReview`, so the returned entity clears its own flag when the
-  // figures reconcile. Throws on failure so the dialog surfaces it.
-  async function handleSave(id: number, changes: EditableInvoiceFields) {
-    const saved = await updateInvoice(id, changes);
-    setInvoices((prev) => prev.map((inv) => (inv.id === id ? saved : inv)));
+  // Save field corrections (PATCH). Throws on failure so the dialog surfaces it.
+  async function handleSave(id: number, changes: EditableRevenueFields) {
+    const saved = await updateRevenue(id, changes);
+    setReports((prev) => prev.map((r) => (r.id === id ? saved : r)));
+  }
+
+  // Save corrections, then transition to APPROVED. The backend rejects approval
+  // (409) when the dual math check fails; that error propagates to the dialog.
+  async function handleApprove(id: number, changes: EditableRevenueFields) {
+    const saved = await updateRevenue(id, changes);
+    setReports((prev) => prev.map((r) => (r.id === id ? saved : r)));
+    const approved = await updateRevenueStatus(id, "APPROVED");
+    setReports((prev) => prev.map((r) => (r.id === id ? approved : r)));
   }
 
   return (
     <main className="min-h-screen bg-muted/30">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Header */}
         <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">
-              Invoice Review Station
-            </h1>
+            <h1 className="text-2xl font-bold tracking-tight">Báo cáo Doanh thu</h1>
             <p className="text-sm text-muted-foreground">
-              Review and correct incoming German accounting invoices.
+              Kiểm tra và phê duyệt báo cáo doanh thu Z-Bon / POS hàng ngày.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <PeriodFilter
-              value={period}
-              onChange={handlePeriodChange}
-              labels={EN_LABELS}
-            />
+            <PeriodFilter value={period} onChange={handlePeriodChange} />
             <Button variant="outline" onClick={handleRefresh} disabled={loading}>
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-              Refresh
+              Làm mới
             </Button>
             <Button asChild>
-              <Link href="/invoices/scan">
+              <Link href="/revenues/scan">
                 <ScanLine className="h-4 w-4" />
-                Scan invoice
+                Quét báo cáo
               </Link>
             </Button>
           </div>
         </header>
 
-        {/* Summary cards */}
         <section className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <SummaryCard
-            title="Total Invoices"
-            value={loading ? "—" : visibleInvoices.length}
-            icon={<FileText className="h-5 w-5" />}
+            title="Tổng số báo cáo"
+            value={loading ? "—" : visibleReports.length}
+            icon={<Wallet className="h-5 w-5" />}
           />
           <SummaryCard
-            title="Requires Review"
+            title="Cần kiểm tra"
             value={loading ? "—" : reviewCount}
             icon={<TriangleAlert className="h-5 w-5" />}
             accent={!loading && reviewCount > 0 ? "danger" : undefined}
           />
           <SummaryCard
-            title="Total Gross Volume"
+            title="Tổng doanh thu"
             value={loading ? "—" : formatCurrency(totalGross)}
             icon={<Sigma className="h-5 w-5" />}
           />
         </section>
 
-        {/* Tax summary bar (server-aggregated, period-aware) */}
+        {/* Thanh thống kê thuế (tổng hợp phía máy chủ, theo kỳ đã chọn) */}
         <section className="mb-8">
           <TaxSummaryBar
             loading={statsLoading}
             error={statsError}
             items={[
-              { label: "Tax 7%", value: formatCurrency(stats?.totalTax7) },
-              { label: "Tax 19%", value: formatCurrency(stats?.totalTax19) },
-              { label: "Total tax", value: formatCurrency(stats?.totalTax) },
-              { label: "Records", value: stats?.reportCount ?? "—" },
+              { label: "Thuế 7%", value: formatCurrency(stats?.totalTax7) },
+              { label: "Thuế 19%", value: formatCurrency(stats?.totalTax19) },
+              { label: "Tổng thuế", value: formatCurrency(stats?.totalTax) },
+              { label: "Số báo cáo", value: stats?.reportCount ?? "—" },
+              {
+                label: "Tổng doanh thu",
+                value: formatCurrency(stats?.totalGrossRevenue),
+              },
             ]}
           />
         </section>
 
-        {/* Content: loading / error / table */}
         {loading ? (
           <div className="flex h-64 flex-col items-center justify-center gap-3 rounded-xl border bg-card text-muted-foreground">
             <Loader2 className="h-8 w-8 animate-spin" />
-            <p className="text-sm">Loading invoices…</p>
+            <p className="text-sm">Đang tải báo cáo doanh thu…</p>
           </div>
         ) : error ? (
           <div className="flex h-64 flex-col items-center justify-center gap-3 rounded-xl border border-red-200 bg-red-50/50 px-6 text-center">
             <AlertTriangle className="h-8 w-8 text-red-600" />
             <div>
               <p className="font-semibold text-red-800">
-                Could not load invoices
+                Không thể tải báo cáo doanh thu
               </p>
               <p className="mt-1 text-sm text-red-700">{error}</p>
             </div>
             <Button variant="outline" onClick={handleRefresh}>
               <RefreshCw className="h-4 w-4" />
-              Try again
+              Thử lại
             </Button>
           </div>
         ) : (
-          <InvoiceTable invoices={visibleInvoices} onSelect={handleSelect} />
+          <RevenueTable reports={visibleReports} onSelect={handleSelect} />
         )}
       </div>
 
-      {/* Review / correct dialog */}
-      <InvoiceReviewDialog
-        invoice={selected}
+      <RevenueReviewDialog
+        report={selected}
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         onSave={handleSave}
+        onApprove={handleApprove}
       />
     </main>
   );
