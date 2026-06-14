@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BarChart3,
   FileText,
   ScanLine,
   Wallet,
@@ -21,6 +22,12 @@ interface NavItem {
 }
 
 const NAV: { section: string; items: NavItem[] }[] = [
+  {
+    section: "Tổng quan",
+    items: [
+      { href: "/dashboard", label: "Thống kê", icon: BarChart3, exact: true },
+    ],
+  },
   {
     section: "Invoices",
     items: [

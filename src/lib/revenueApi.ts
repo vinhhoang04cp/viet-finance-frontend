@@ -7,6 +7,7 @@ import type {
   RevenueReport,
   RevenueTaxStatistics,
 } from "@/types/revenue";
+import type { MonthlyTaxStatistics } from "@/types/statistics";
 
 const REVENUES_URL = `${API_BASE_URL}/api/v1/revenues`;
 
@@ -63,6 +64,33 @@ export async function fetchRevenueStatistics(
   }
 
   return (await res.json()) as RevenueTaxStatistics;
+}
+
+/**
+ * Fetch the per-month revenue tax breakdown for a year, optionally filtered by
+ * approval status (GET /api/v1/revenues/statistics/monthly?year=&status=).
+ * Always 12 zero-filled points; the date dimension is the report period.
+ */
+export async function fetchRevenueMonthlyStatistics(
+  year: number,
+  status?: DocumentStatus | null,
+  signal?: AbortSignal
+): Promise<MonthlyTaxStatistics> {
+  const params = new URLSearchParams({ year: String(year) });
+  if (status) params.set("status", status);
+
+  const res = await fetch(
+    `${REVENUES_URL}/statistics/monthly?${params.toString()}`,
+    { cache: "no-store", signal }
+  );
+
+  if (!res.ok) {
+    throw new Error(
+      `Failed to load monthly revenue statistics (HTTP ${res.status} ${res.statusText}).`
+    );
+  }
+
+  return (await res.json()) as MonthlyTaxStatistics;
 }
 
 /**

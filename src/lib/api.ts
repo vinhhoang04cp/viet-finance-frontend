@@ -5,6 +5,7 @@ import type {
   InvoiceTaxStatistics,
 } from "@/types/invoice";
 import type { BatchAcceptedResponse } from "@/types/common";
+import type { MonthlyTaxStatistics } from "@/types/statistics";
 
 /**
  * Base URL for API calls.
@@ -68,6 +69,28 @@ export async function fetchInvoiceStatistics(
   }
 
   return (await res.json()) as InvoiceTaxStatistics;
+}
+
+/**
+ * Fetch the per-month invoice tax breakdown for a year
+ * (GET /api/v1/invoices/statistics/monthly?year=). Always 12 zero-filled points.
+ */
+export async function fetchInvoiceMonthlyStatistics(
+  year: number,
+  signal?: AbortSignal
+): Promise<MonthlyTaxStatistics> {
+  const res = await fetch(
+    `${INVOICES_URL}/statistics/monthly?year=${year}`,
+    { cache: "no-store", signal }
+  );
+
+  if (!res.ok) {
+    throw new Error(
+      `Failed to load monthly invoice statistics (HTTP ${res.status} ${res.statusText}).`
+    );
+  }
+
+  return (await res.json()) as MonthlyTaxStatistics;
 }
 
 /**
