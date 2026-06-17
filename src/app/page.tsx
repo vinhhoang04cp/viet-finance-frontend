@@ -18,7 +18,14 @@ import { InvoiceTable } from "@/components/invoices/InvoiceTable";
 import { InvoiceReviewDialog } from "@/components/invoices/InvoiceReviewDialog";
 import { TaxSummaryBar } from "@/components/statistics/TaxSummaryBar";
 import { PeriodFilter, type PeriodFilterLabels } from "@/components/filters/PeriodFilter";
-import { fetchInvoices, fetchInvoiceStatistics, updateInvoice } from "@/lib/api";
+import { toast } from "sonner";
+
+import {
+  fetchInvoices,
+  fetchInvoiceStatistics,
+  updateInvoice,
+  updateInvoiceStatus,
+} from "@/lib/api";
 import { cn, formatCurrency } from "@/lib/utils";
 import {
   ALL_PERIOD,
@@ -26,6 +33,7 @@ import {
   periodToRange,
   type Period,
 } from "@/lib/period";
+import type { DocumentStatus } from "@/types/common";
 import type {
   EditableInvoiceFields,
   Invoice,
@@ -97,6 +105,9 @@ export default function DashboardPage() {
 
   const [selected, setSelected] = React.useState<Invoice | null>(null);
   const [dialogOpen, setDialogOpen] = React.useState(false);
+
+  // Id of the invoice whose approval status change is in flight (drives the row spinner).
+  const [pendingStatusId, setPendingStatusId] = React.useState<number | null>(null);
 
   const range = React.useMemo(() => periodToRange(period), [period]);
   const { from, to } = range;
@@ -181,6 +192,33 @@ export default function DashboardPage() {
   async function handleSave(id: number, changes: EditableInvoiceFields) {
     const saved = await updateInvoice(id, changes);
     setInvoices((prev) => prev.map((inv) => (inv.id === id ? saved : inv)));
+  }
+
+  // Approve / reject from the table (Approval Station). Optimistic update with rollback:
+  // flip the row's status immediately for snappy UX, then reconcile with the server response
+  // (which also recomputes requiresManualReview). On failure — e.g. the backend's 409 when
+  // approving an invoice that still needs review — restore the previous list and toast the error.
+  async function handleUpdateStatus(invoice: Invoice, status: DocumentStatus) {
+    if (pendingStatusId !== null) return; // one at a time
+    const previous = invoices;
+    setPendingStatusId(invoice.id);
+    setInvoices((prev) =>
+      prev.map((inv) => (inv.id === invoice.id ? { ...inv, status } : inv))
+    );
+    try {
+      const saved = await updateInvoiceStatus(invoice.id, status);
+      setInvoices((prev) => prev.map((inv) => (inv.id === saved.id ? saved : inv)));
+      toast.success(
+        status === "APPROVED"
+          ? `Invoice ${saved.invoiceNumber} approved.`
+          : `Invoice ${saved.invoiceNumber} rejected.`
+      );
+    } catch (err) {
+      setInvoices(previous); // rollback the optimistic change
+      toast.error(err instanceof Error ? err.message : "Could not update status.");
+    } finally {
+      setPendingStatusId(null);
+    }
   }
 
   return (
@@ -270,7 +308,12 @@ export default function DashboardPage() {
             </Button>
           </div>
         ) : (
-          <InvoiceTable invoices={visibleInvoices} onSelect={handleSelect} />
+          <InvoiceTable
+            invoices={visibleInvoices}
+            onSelect={handleSelect}
+            onUpdateStatus={handleUpdateStatus}
+            pendingStatusId={pendingStatusId}
+          />
         )}
       </div>
 

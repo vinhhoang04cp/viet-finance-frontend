@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   BarChart3,
   FileText,
+  Landmark,
   ScanLine,
   Wallet,
   Receipt,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/lib/auth/AuthContext";
 
 interface NavItem {
   href: string;
@@ -19,6 +21,8 @@ interface NavItem {
   icon: LucideIcon;
   /** Match exactly (for index routes) instead of by prefix. */
   exact?: boolean;
+  /** Chỉ hiện cho vai trò được phép ghi (OWNER/ACCOUNTANT) — vd trang upload/scan. */
+  requiresWrite?: boolean;
 }
 
 const NAV: { section: string; items: NavItem[] }[] = [
@@ -26,20 +30,21 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: "Tổng quan",
     items: [
       { href: "/dashboard", label: "Thống kê", icon: BarChart3, exact: true },
+      { href: "/tax", label: "Thuế GTGT", icon: Landmark, exact: true },
     ],
   },
   {
     section: "Invoices",
     items: [
       { href: "/", label: "Approval queue", icon: FileText, exact: true },
-      { href: "/invoices/scan", label: "Scan invoice", icon: ScanLine },
+      { href: "/invoices/scan", label: "Scan invoice", icon: ScanLine, requiresWrite: true },
     ],
   },
   {
     section: "Revenue",
     items: [
       { href: "/revenues", label: "Reports", icon: Wallet, exact: true },
-      { href: "/revenues/scan", label: "Scan report", icon: ScanLine },
+      { href: "/revenues/scan", label: "Scan report", icon: ScanLine, requiresWrite: true },
     ],
   },
 ];
@@ -50,6 +55,7 @@ function isActive(pathname: string, item: NavItem): boolean {
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { canWrite } = useAuth();
 
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r bg-card">
@@ -70,7 +76,9 @@ export function Sidebar() {
               {group.section}
             </p>
             <ul className="space-y-1">
-              {group.items.map((item) => {
+              {group.items
+                .filter((item) => !item.requiresWrite || canWrite)
+                .map((item) => {
                 const active = isActive(pathname, item);
                 const Icon = item.icon;
                 return (

@@ -1,4 +1,5 @@
 import { API_BASE_URL, describeError } from "@/lib/api";
+import { apiFetch } from "@/lib/apiFetch";
 import type { BatchAcceptedResponse, DocumentStatus } from "@/types/common";
 import type { Page } from "@/types/page";
 import type {
@@ -7,7 +8,11 @@ import type {
   RevenueReport,
   RevenueTaxStatistics,
 } from "@/types/revenue";
-import type { MonthlyTaxStatistics } from "@/types/statistics";
+import type {
+  MonthlyTaxStatistics,
+  RevenueLineItem,
+  TaxTimeline,
+} from "@/types/statistics";
 
 const REVENUES_URL = `${API_BASE_URL}/api/v1/revenues`;
 
@@ -20,7 +25,7 @@ const REVENUES_URL = `${API_BASE_URL}/api/v1/revenues`;
 export async function fetchRevenues(
   signal?: AbortSignal
 ): Promise<RevenueReport[]> {
-  const res = await fetch(`${REVENUES_URL}?size=200&sort=id,desc`, {
+  const res = await apiFetch(`${REVENUES_URL}?size=200&sort=id,desc`, {
     cache: "no-store",
     signal,
   });
@@ -52,7 +57,7 @@ export async function fetchRevenueStatistics(
   if (status) params.set("status", status);
   const query = params.toString();
 
-  const res = await fetch(
+  const res = await apiFetch(
     `${REVENUES_URL}/statistics${query ? `?${query}` : ""}`,
     { cache: "no-store", signal }
   );
@@ -81,7 +86,7 @@ export async function fetchRevenueMonthlyStatistics(
   if (year != null) params.set("year", String(year));
   if (status) params.set("status", status);
 
-  const res = await fetch(
+  const res = await apiFetch(
     `${REVENUES_URL}/statistics/monthly?${params.toString()}`,
     { cache: "no-store", signal }
   );
@@ -96,6 +101,65 @@ export async function fetchRevenueMonthlyStatistics(
 }
 
 /**
+ * Fetch the CONTINUOUS revenue tax timeline
+ * (GET /api/v1/revenues/statistics/timeline?from&to&status) — one point per calendar month in the
+ * window, spanning year boundaries. Drives the dashboard's rolling "last N months" chart.
+ */
+export async function fetchRevenueTimeline(
+  from: string | null,
+  to: string | null,
+  status?: DocumentStatus | null,
+  signal?: AbortSignal
+): Promise<TaxTimeline> {
+  const params = new URLSearchParams();
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  if (status) params.set("status", status);
+  const query = params.toString();
+
+  const res = await apiFetch(
+    `${REVENUES_URL}/statistics/timeline${query ? `?${query}` : ""}`,
+    { cache: "no-store", signal }
+  );
+
+  if (!res.ok) {
+    throw new Error(
+      `Failed to load revenue timeline (HTTP ${res.status} ${res.statusText}).`
+    );
+  }
+
+  return (await res.json()) as TaxTimeline;
+}
+
+/**
+ * Fetch the individual revenue reports in a date window
+ * (GET /api/v1/revenues/statistics/details?from&to&status) — backs the per-month drill-down table.
+ */
+export async function fetchRevenueDetails(
+  from: string | null,
+  to: string | null,
+  status?: DocumentStatus | null,
+  signal?: AbortSignal
+): Promise<RevenueLineItem[]> {
+  const params = new URLSearchParams();
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  if (status) params.set("status", status);
+  const query = params.toString();
+
+  const res = await apiFetch(
+    `${REVENUES_URL}/statistics/details${query ? `?${query}` : ""}`,
+    { cache: "no-store", signal }
+  );
+
+  if (!res.ok) {
+    throw new Error(await describeError(res, "tải chi tiết doanh thu"));
+  }
+
+  return (await res.json()) as RevenueLineItem[];
+}
+
+/**
  * Persist accountant corrections via a partial update
  * (PATCH /api/v1/revenues/{id}) — same rationale as invoices: PUT is
  * full-replacement and would 400 on a partial body. The backend re-runs its
@@ -105,7 +169,7 @@ export async function updateRevenue(
   id: number,
   changes: EditableRevenueFields
 ): Promise<RevenueReport> {
-  const res = await fetch(`${REVENUES_URL}/${id}`, {
+  const res = await apiFetch(`${REVENUES_URL}/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(changes),
@@ -127,7 +191,7 @@ export async function updateRevenueStatus(
   id: number,
   status: DocumentStatus
 ): Promise<RevenueReport> {
-  const res = await fetch(`${REVENUES_URL}/${id}/status`, {
+  const res = await apiFetch(`${REVENUES_URL}/${id}/status`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status }),
@@ -149,7 +213,7 @@ export async function extractRevenue(file: File): Promise<RevenueReport> {
   const form = new FormData();
   form.append("file", file);
 
-  const res = await fetch(`${REVENUES_URL}/extract`, {
+  const res = await apiFetch(`${REVENUES_URL}/extract`, {
     method: "POST",
     body: form,
   });
@@ -171,7 +235,7 @@ export async function extractRevenueBatch(
   const form = new FormData();
   for (const f of files) form.append("files", f);
 
-  const res = await fetch(`${REVENUES_URL}/extract/batch`, {
+  const res = await apiFetch(`${REVENUES_URL}/extract/batch`, {
     method: "POST",
     body: form,
   });
@@ -187,7 +251,7 @@ export async function extractRevenueBatch(
 export async function createRevenue(
   payload: RevenueCreateRequest
 ): Promise<RevenueReport> {
-  const res = await fetch(REVENUES_URL, {
+  const res = await apiFetch(REVENUES_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

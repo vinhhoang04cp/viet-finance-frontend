@@ -8,6 +8,7 @@ import {
   Percent,
   RefreshCw,
   Sigma,
+  X,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,17 +17,37 @@ import { StatCard } from "@/components/statistics/StatCard";
 import { MonthlyTaxBarChart } from "@/components/statistics/MonthlyTaxBarChart";
 import { TaxDistributionPieChart } from "@/components/statistics/TaxDistributionPieChart";
 import { MonthlyTaxTable } from "@/components/statistics/MonthlyTaxTable";
-import { fetchInvoiceMonthlyStatistics } from "@/lib/api";
-import { fetchRevenueMonthlyStatistics } from "@/lib/revenueApi";
+import {
+  InvoiceLineItemsTable,
+  RevenueLineItemsTable,
+} from "@/components/statistics/LineItemsTables";
+import {
+  fetchInvoiceTimeline,
+  fetchInvoiceDetails,
+} from "@/lib/api";
+import {
+  fetchRevenueTimeline,
+  fetchRevenueDetails,
+} from "@/lib/revenueApi";
 import { cn, formatCurrency } from "@/lib/utils";
-import { availableYears } from "@/lib/period";
-import { emptyMonthly, mergeMonthly, sumMonthly } from "@/lib/statistics";
+import {
+  DEFAULT_TIMELINE_MONTHS,
+  TIMELINE_RANGES,
+  mergeTimeline,
+  monthRangeOf,
+  recentRange,
+  sumTimeline,
+  timelineLong,
+} from "@/lib/statistics";
 import type { DocumentStatus } from "@/types/common";
-import type { MonthlyTaxPoint } from "@/types/statistics";
+import type {
+  InvoiceLineItem,
+  RevenueLineItem,
+  TimelinePoint,
+} from "@/types/statistics";
 
 type ModuleFilter = "all" | "invoice" | "revenue";
 type StatusFilter = "all" | DocumentStatus;
-type YearFilter = number | "all";
 
 const MODULE_OPTIONS: { value: ModuleFilter; label: string }[] = [
   { value: "all", label: "Tất cả" },
@@ -45,74 +66,121 @@ const SELECT_CLASS =
   "h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
 
 export default function StatisticsDashboardPage() {
-  const years = React.useMemo(() => availableYears(), []);
-
   const [module, setModule] = React.useState<ModuleFilter>("all");
-  const [year, setYear] = React.useState<YearFilter>(years[0]);
+  const [months, setMonths] = React.useState<number>(DEFAULT_TIMELINE_MONTHS);
   const [status, setStatus] = React.useState<StatusFilter>("all");
 
-  const [monthly, setMonthly] = React.useState<MonthlyTaxPoint[]>(emptyMonthly());
+  const [timeline, setTimeline] = React.useState<TimelinePoint[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [reloadToken, setReloadToken] = React.useState(0);
 
-  // Fetch the monthly series for the current module/year/status. State is only set
-  // in the async callbacks; "loading" resets live in the change handlers so the
-  // effect body stays free of synchronous setState (react-hooks/set-state-in-effect).
+  // Selected month for the drill-down (null = closed).
+  const [selected, setSelected] = React.useState<TimelinePoint | null>(null);
+  const [invoiceItems, setInvoiceItems] = React.useState<InvoiceLineItem[]>([]);
+  const [revenueItems, setRevenueItems] = React.useState<RevenueLineItem[]>([]);
+  const [detailLoading, setDetailLoading] = React.useState(false);
+  const [detailError, setDetailError] = React.useState<string | null>(null);
+
+  const range = React.useMemo(() => recentRange(months), [months]);
+
+  // ── Timeline (rolling window) ──────────────────────────────────────────────
   React.useEffect(() => {
     const controller = new AbortController();
     const statusParam = status === "all" ? undefined : status;
-    const yearParam = year === "all" ? null : year;
 
-    const load = async (): Promise<MonthlyTaxPoint[]> => {
+    const load = async (): Promise<TimelinePoint[]> => {
       if (module === "invoice") {
-        return (await fetchInvoiceMonthlyStatistics(yearParam, controller.signal)).monthly;
+        return (await fetchInvoiceTimeline(range.from, range.to, controller.signal)).points;
       }
       if (module === "revenue") {
-        return (
-          await fetchRevenueMonthlyStatistics(yearParam, statusParam, controller.signal)
-        ).monthly;
+        return (await fetchRevenueTimeline(range.from, range.to, statusParam, controller.signal))
+          .points;
       }
       const [inv, rev] = await Promise.all([
-        fetchInvoiceMonthlyStatistics(yearParam, controller.signal),
-        fetchRevenueMonthlyStatistics(yearParam, statusParam, controller.signal),
+        fetchInvoiceTimeline(range.from, range.to, controller.signal),
+        fetchRevenueTimeline(range.from, range.to, statusParam, controller.signal),
       ]);
-      return mergeMonthly(inv.monthly, rev.monthly);
+      return mergeTimeline(inv.points, rev.points);
     };
 
     load()
       .then((data) => {
-        setMonthly(data);
+        setTimeline(data);
         setError(null);
       })
       .catch((err: unknown) => {
         if ((err as Error).name !== "AbortError") {
-          setError(
-            err instanceof Error ? err.message : "Không thể tải dữ liệu thống kê."
-          );
+          setError(err instanceof Error ? err.message : "Không thể tải dữ liệu thống kê.");
         }
       })
       .finally(() => setLoading(false));
 
     return () => controller.abort();
-  }, [module, year, status, reloadToken]);
+  }, [module, range.from, range.to, status, reloadToken]);
 
-  const totals = React.useMemo(() => sumMonthly(monthly), [monthly]);
+  // ── Drill-down details for the selected month ──────────────────────────────
+  React.useEffect(() => {
+    if (!selected) return;
+    const controller = new AbortController();
+    const statusParam = status === "all" ? undefined : status;
+    const { from, to } = monthRangeOf(selected);
 
+    const load = async () => {
+      const [inv, rev] = await Promise.all([
+        module === "revenue"
+          ? Promise.resolve<InvoiceLineItem[]>([])
+          : fetchInvoiceDetails(from, to, controller.signal),
+        module === "invoice"
+          ? Promise.resolve<RevenueLineItem[]>([])
+          : fetchRevenueDetails(from, to, statusParam, controller.signal),
+      ]);
+      return { inv, rev };
+    };
+
+    load()
+      .then(({ inv, rev }) => {
+        setInvoiceItems(inv);
+        setRevenueItems(rev);
+        setDetailError(null);
+      })
+      .catch((err: unknown) => {
+        if ((err as Error).name !== "AbortError") {
+          setDetailError(err instanceof Error ? err.message : "Không thể tải chi tiết tháng.");
+        }
+      })
+      .finally(() => setDetailLoading(false));
+
+    return () => controller.abort();
+  }, [selected, module, status]);
+
+  const totals = React.useMemo(() => sumTimeline(timeline), [timeline]);
+
+  function openMonth(point: TimelinePoint) {
+    setDetailLoading(true);
+    setDetailError(null);
+    setInvoiceItems([]);
+    setRevenueItems([]);
+    setSelected(point);
+  }
   function changeModule(next: ModuleFilter) {
     setLoading(true);
+    setSelected(null);
     setModule(next);
   }
-  function changeYear(next: YearFilter) {
+  function changeMonths(next: number) {
     setLoading(true);
-    setYear(next);
+    setSelected(null);
+    setMonths(next);
   }
   function changeStatus(next: StatusFilter) {
     setLoading(true);
+    setSelected(null);
     setStatus(next);
   }
   function handleRefresh() {
     setLoading(true);
+    setSelected(null);
     setReloadToken((t) => t + 1);
   }
 
@@ -123,7 +191,7 @@ export default function StatisticsDashboardPage() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Thống kê thuế</h1>
             <p className="text-sm text-muted-foreground">
-              Tổng quan tiền thuế theo tháng cho hóa đơn và doanh thu.
+              Theo dõi tiền thuế theo tháng cho hóa đơn và doanh thu — bấm vào một tháng để xem chi tiết.
             </p>
           </div>
           <Button variant="outline" onClick={handleRefresh} disabled={loading}>
@@ -152,19 +220,16 @@ export default function StatisticsDashboardPage() {
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-muted-foreground">Năm:</span>
+              <span className="text-sm font-medium text-muted-foreground">Khoảng:</span>
               <select
                 className={SELECT_CLASS}
-                value={year === "all" ? "all" : String(year)}
-                onChange={(e) =>
-                  changeYear(e.target.value === "all" ? "all" : Number(e.target.value))
-                }
-                aria-label="Năm"
+                value={String(months)}
+                onChange={(e) => changeMonths(Number(e.target.value))}
+                aria-label="Khoảng thời gian"
               >
-                <option value="all">Tất cả các năm</option>
-                {years.map((y) => (
-                  <option key={y} value={y}>
-                    {y}
+                {TIMELINE_RANGES.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
                   </option>
                 ))}
               </select>
@@ -172,9 +237,7 @@ export default function StatisticsDashboardPage() {
 
             {module !== "invoice" && (
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-muted-foreground">
-                  Trạng thái:
-                </span>
+                <span className="text-sm font-medium text-muted-foreground">Trạng thái:</span>
                 <select
                   className={SELECT_CLASS}
                   value={status}
@@ -196,12 +259,7 @@ export default function StatisticsDashboardPage() {
           <div className="mb-6 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50/50 px-4 py-3 text-sm text-red-700">
             <AlertTriangle className="h-4 w-4 shrink-0 text-red-600" />
             <span>{error}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              className="ml-auto"
-              onClick={handleRefresh}
-            >
+            <Button variant="outline" size="sm" className="ml-auto" onClick={handleRefresh}>
               Thử lại
             </Button>
           </div>
@@ -242,14 +300,14 @@ export default function StatisticsDashboardPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
                 <BarChart3 className="h-4 w-4" />
-                Thuế theo tháng — {year === "all" ? "tất cả các năm" : year}
+                Thuế theo tháng — {TIMELINE_RANGES.find((r) => r.value === months)?.label}
               </CardTitle>
             </CardHeader>
             <CardContent>
               {loading ? (
                 <div className="h-80 w-full animate-pulse rounded-lg bg-muted" />
               ) : (
-                <MonthlyTaxBarChart data={monthly} />
+                <MonthlyTaxBarChart data={timeline} onSelectMonth={openMonth} />
               )}
             </CardContent>
           </Card>
@@ -262,24 +320,62 @@ export default function StatisticsDashboardPage() {
               {loading ? (
                 <div className="h-80 w-full animate-pulse rounded-lg bg-muted" />
               ) : (
-                <TaxDistributionPieChart
-                  tax7={totals.totalTax7}
-                  tax19={totals.totalTax19}
-                />
+                <TaxDistributionPieChart tax7={totals.totalTax7} tax19={totals.totalTax19} />
               )}
             </CardContent>
           </Card>
         </section>
 
-        {/* Phần 4 — Bảng chi tiết theo tháng */}
+        {/* Phần 4 — Drill-down chi tiết tháng */}
+        {selected && (
+          <section className="mb-8">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-semibold tracking-tight">
+                Chi tiết {timelineLong(selected)}
+              </h2>
+              <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>
+                <X className="h-4 w-4" />
+                Đóng
+              </Button>
+            </div>
+
+            {detailError ? (
+              <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50/50 px-4 py-3 text-sm text-red-700">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-red-600" />
+                <span>{detailError}</span>
+              </div>
+            ) : detailLoading ? (
+              <div className="h-48 w-full animate-pulse rounded-xl bg-muted" />
+            ) : (
+              <div className="space-y-6">
+                {module !== "revenue" && (
+                  <div>
+                    <h3 className="mb-2 text-sm font-medium text-muted-foreground">
+                      Hóa đơn (thuế đầu vào) · {invoiceItems.length}
+                    </h3>
+                    <InvoiceLineItemsTable items={invoiceItems} />
+                  </div>
+                )}
+                {module !== "invoice" && (
+                  <div>
+                    <h3 className="mb-2 text-sm font-medium text-muted-foreground">
+                      Doanh thu (thuế đầu ra) · {revenueItems.length}
+                    </h3>
+                    <RevenueLineItemsTable items={revenueItems} />
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Phần 5 — Bảng chi tiết theo tháng */}
         <section className="mb-8">
-          <h2 className="mb-3 text-lg font-semibold tracking-tight">
-            Chi tiết theo tháng
-          </h2>
+          <h2 className="mb-3 text-lg font-semibold tracking-tight">Chi tiết theo tháng</h2>
           {loading ? (
             <div className="h-96 w-full animate-pulse rounded-xl bg-muted" />
           ) : (
-            <MonthlyTaxTable data={monthly} />
+            <MonthlyTaxTable data={timeline} onSelectMonth={openMonth} />
           )}
         </section>
       </div>

@@ -16,6 +16,8 @@ import { Badge } from "@/components/ui/badge";
 import { FileDropzone } from "@/components/upload/FileDropzone";
 import { LabeledInput } from "@/components/forms/LabeledInput";
 import { createInvoice, extractInvoice, extractInvoiceBatch } from "@/lib/api";
+import { useAuth } from "@/lib/auth/AuthContext";
+import { AccessDenied } from "@/components/auth/AccessDenied";
 import { BatchUpload } from "@/components/upload/BatchUpload";
 import { ScanModeTabs, type ScanMode } from "@/components/upload/ScanModeTabs";
 import type { Invoice, InvoiceCreateRequest } from "@/types/invoice";
@@ -47,6 +49,7 @@ function num(v: string): number | null {
 }
 
 export default function InvoiceScanPage() {
+  const { canWrite } = useAuth();
   const [mode, setMode] = React.useState<ScanMode>("single");
   const [file, setFile] = React.useState<File | null>(null);
   const [extracting, setExtracting] = React.useState(false);
@@ -58,6 +61,8 @@ export default function InvoiceScanPage() {
 
   const set = (key: string) => (value: string) =>
     setForm((prev) => ({ ...prev, [key]: value }));
+
+  if (!canWrite) return <AccessDenied />;
 
   async function handleExtract() {
     if (!file) return;

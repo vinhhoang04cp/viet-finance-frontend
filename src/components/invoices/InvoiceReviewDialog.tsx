@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { LabeledInput } from "@/components/forms/LabeledInput";
 import { formatDate } from "@/lib/utils";
+import { useAuth } from "@/lib/auth/AuthContext";
 import type { EditableInvoiceFields, Invoice } from "@/types/invoice";
 
 interface InvoiceReviewDialogProps {
@@ -42,6 +43,22 @@ function ReadOnlyField({
   );
 }
 
+/**
+ * Human-readable labels for the server-owned review reason codes (Invoice.reviewReasons()).
+ * Tells the reviewer WHICH field to fix instead of a bare "needs review" badge. English to match
+ * the (still-English) invoice surface. Unknown codes fall back to the raw code.
+ */
+const REVIEW_REASON_LABELS: Record<string, string> = {
+  MATH_UNBALANCED: "Amounts don't balance: Net + Tax 7% + Tax 19% ≠ Gross.",
+  TAX19_BUCKET_IMPLAUSIBLE:
+    "The 19% tax implies a taxable base larger than Net — a 7% amount may be in the 19% box.",
+  INVOICE_NUMBER_MISSING: "Invoice number is missing.",
+  INVOICE_NUMBER_SUSPICIOUS:
+    "Invoice number looks invalid (UNKNOWN or a phone number) — enter the real Rechnungsnummer.",
+  INVOICE_NUMBER_DECOY:
+    "Invoice number matches a known decoy ID (e.g. a GLN / Kunden-Nr.), not a real Rechnungsnummer — enter the correct one.",
+};
+
 /** Parse a numeric string -> number | null (blank becomes null). */
 function num(v: string): number | null {
   const t = v.trim();
@@ -55,10 +72,11 @@ function num(v: string): number | null {
  * mounts this with `key={invoice.id}` so a different invoice gets fresh state
  * (no `useEffect` sync).
  *
- * Every amount is editable because the server-owned `requiresManualReview` flag
- * is driven by the accounting math check — saving corrected figures lets the
- * backend re-validate and clear the flag. The backend has no invoice approval
- * workflow (KISS), so "Save changes" is the only action.
+ * The figures driving the server-owned `requiresManualReview` flag are editable so
+ * saving corrected values lets the backend re-validate and clear it. The accounting
+ * check reconciles `gross == net + tax7 + tax19` (the 7%/19% buckets, NOT the
+ * "Tax total" — which is a derived display field, shown read-only here). The backend
+ * has no invoice approval workflow (KISS), so "Save changes" is the only action.
  */
 function ReviewForm({
   invoice,
@@ -75,16 +93,21 @@ function ReviewForm({
     invoiceNumber: invoice.invoiceNumber === "UNKNOWN" ? "" : str(invoice.invoiceNumber),
     netAmount: str(invoice.netAmount),
     grossAmount: str(invoice.grossAmount),
-    taxAmount: str(invoice.taxAmount),
     taxAmount7: str(invoice.taxAmount7),
     taxAmount19: str(invoice.taxAmount19),
     taxRates: str(invoice.taxRates),
   });
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const { canWrite } = useAuth();
 
   const set = (key: string) => (value: string) =>
     setForm((prev) => ({ ...prev, [key]: value }));
+
+  // "Tax total" is derived, not edited: it must equal tax7 + tax19, which is exactly what
+  // the backend's math check (gross == net + tax7 + tax19) reconciles. Showing it live and
+  // read-only stops a reviewer from "fixing" the total and wondering why the flag stays.
+  const taxTotal = (num(form.taxAmount7) ?? 0) + (num(form.taxAmount19) ?? 0);
 
   function collect(): EditableInvoiceFields {
     const changes: EditableInvoiceFields = {};
@@ -93,13 +116,9 @@ function ReviewForm({
     // (the backend's sentinel) rather than being silently dropped.
     changes.invoiceNumber = form.invoiceNumber.trim() || "UNKNOWN";
     if (form.taxRates.trim()) changes.taxRates = form.taxRates.trim();
-    const numericKeys = [
-      "netAmount",
-      "grossAmount",
-      "taxAmount",
-      "taxAmount7",
-      "taxAmount19",
-    ] as const;
+    // taxAmount is intentionally NOT sent: it is a derived total (tax7 + tax19) that the
+    // backend recomputes on save. The reviewer edits the per-rate buckets, not the total.
+    const numericKeys = ["netAmount", "grossAmount", "taxAmount7", "taxAmount19"] as const;
     for (const k of numericKeys) {
       const n = num(form[k]);
       if (n !== null) changes[k] = n;
@@ -137,6 +156,21 @@ function ReviewForm({
         </DialogDescription>
       </DialogHeader>
 
+      {/* Why this invoice is flagged — tells the reviewer which field to fix. */}
+      {invoice.requiresManualReview && (invoice.reviewReasons?.length ?? 0) > 0 && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2">
+          <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-amber-800">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            Why this needs review
+          </p>
+          <ul className="list-disc space-y-0.5 pl-5 text-xs text-amber-800">
+            {invoice.reviewReasons!.map((code) => (
+              <li key={code}>{REVIEW_REASON_LABELS[code] ?? code}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Read-only context */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <ReadOnlyField label="Tax rates" value={invoice.taxRates ?? "—"} />
@@ -156,10 +190,10 @@ function ReviewForm({
           <LabeledInput id="vendorName" label="Vendor" value={form.vendorName} onChange={set("vendorName")} className="col-span-2 sm:col-span-3" />
           <LabeledInput id="invoiceNumber" label="Invoice no." mono value={form.invoiceNumber} onChange={set("invoiceNumber")} placeholder="e.g. RE-2026-000123" className="col-span-2 sm:col-span-3" />
           <LabeledInput id="netAmount" label="Net" type="number" step="0.01" value={form.netAmount} onChange={set("netAmount")} />
-          <LabeledInput id="taxAmount" label="Tax total" type="number" step="0.01" value={form.taxAmount} onChange={set("taxAmount")} />
+          <LabeledInput id="taxTotal" label="Tax total" type="number" value={taxTotal.toFixed(2)} onChange={() => {}} disabled hint="= Tax 7% + Tax 19% (auto)" />
           <LabeledInput id="grossAmount" label="Gross" type="number" step="0.01" value={form.grossAmount} onChange={set("grossAmount")} />
-          <LabeledInput id="taxAmount7" label="Tax 7%" type="number" step="0.01" value={form.taxAmount7} onChange={set("taxAmount7")} />
-          <LabeledInput id="taxAmount19" label="Tax 19%" type="number" step="0.01" value={form.taxAmount19} onChange={set("taxAmount19")} />
+          <LabeledInput id="taxAmount7" label="Tax 7%" type="number" step="0.01" value={form.taxAmount7} onChange={set("taxAmount7")} hint="Drives the review flag" />
+          <LabeledInput id="taxAmount19" label="Tax 19%" type="number" step="0.01" value={form.taxAmount19} onChange={set("taxAmount19")} hint="Drives the review flag" />
           <LabeledInput id="taxRates" label="Tax rates" value={form.taxRates} onChange={set("taxRates")} placeholder="e.g. 7%, 19%" />
         </div>
       </section>
@@ -172,16 +206,18 @@ function ReviewForm({
 
       <DialogFooter className="gap-2">
         <Button variant="outline" onClick={onClose} disabled={busy}>
-          Cancel
+          {canWrite ? "Hủy" : "Đóng"}
         </Button>
-        <Button onClick={handleSave} disabled={busy}>
-          {busy ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Save className="h-4 w-4" />
-          )}
-          Save changes
-        </Button>
+        {canWrite && (
+          <Button onClick={handleSave} disabled={busy}>
+            {busy ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4" />
+            )}
+            Lưu thay đổi
+          </Button>
+        )}
       </DialogFooter>
     </>
   );

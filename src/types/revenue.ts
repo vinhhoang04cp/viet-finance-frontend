@@ -43,6 +43,9 @@ export interface RevenueReport {
   accountingNotes: string | null;
 
   requiresManualReview: boolean; // CRITICAL FLAG FOR UI
+  // Stable reason codes explaining WHY the flag is set (TAX_TOTAL_UNBALANCED,
+  // TAX_BREAKDOWN_MISMATCH, CASHFLOW_DISCREPANCY). Empty/undefined when clean. Server-owned.
+  reviewReasons?: string[];
   status: string;
 }
 

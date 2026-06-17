@@ -20,6 +20,8 @@ import {
   extractRevenue,
   extractRevenueBatch,
 } from "@/lib/revenueApi";
+import { useAuth } from "@/lib/auth/AuthContext";
+import { AccessDenied } from "@/components/auth/AccessDenied";
 import { BatchUpload } from "@/components/upload/BatchUpload";
 import { ScanModeTabs, type ScanMode } from "@/components/upload/ScanModeTabs";
 import type { RevenueCreateRequest, RevenueReport } from "@/types/revenue";
@@ -59,6 +61,7 @@ function num(v: string): number | null {
 }
 
 export default function RevenueScanPage() {
+  const { canWrite } = useAuth();
   const [mode, setMode] = React.useState<ScanMode>("single");
   const [file, setFile] = React.useState<File | null>(null);
   const [extracting, setExtracting] = React.useState(false);
@@ -70,6 +73,8 @@ export default function RevenueScanPage() {
 
   const set = (key: string) => (value: string) =>
     setForm((prev) => ({ ...prev, [key]: value }));
+
+  if (!canWrite) return <AccessDenied />;
 
   async function handleExtract() {
     if (!file) return;

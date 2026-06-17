@@ -1,3 +1,5 @@
+import type { DocumentStatus } from "@/types/common";
+
 /**
  * Domain model for an accounting invoice.
  *
@@ -6,8 +8,10 @@
  *
  * KISS: the backend Invoice module exposes only the core financial + vendor
  * fields. The § 14 UStG / SEPA fields (vendorVatId, vendorTaxId, iban, bic,
- * isPaid, dueDate) and the approval workflow (status, /status endpoint) were
- * removed from Invoice — do not reintroduce them here without a backend change.
+ * isPaid, dueDate) are NOT exposed — do not reintroduce them here without a
+ * backend change. The approval `status` workflow, by contrast, IS supported
+ * again (mirrors Revenue): `PATCH /api/v1/invoices/{id}/status`, and `status`
+ * is orthogonal to the system-computed `requiresManualReview` flag.
  *
  * NOTE: the backend serializes with `@JsonInclude(NON_NULL)`, so nullable
  * fields are *omitted* from the JSON rather than sent as `null`. At runtime a
@@ -26,7 +30,15 @@ export interface Invoice {
   taxAmount19: number;
   taxAmount7: number;
   taxRates: string | null;
+  /** Approval lifecycle (Approval Station). Orthogonal to `requiresManualReview`. */
+  status: DocumentStatus;
   requiresManualReview: boolean; // CRITICAL FLAG FOR UI
+  /**
+   * Stable reason codes explaining WHY the flag is set (MATH_UNBALANCED,
+   * TAX19_BUCKET_IMPLAUSIBLE, INVOICE_NUMBER_MISSING, INVOICE_NUMBER_SUSPICIOUS).
+   * Empty/undefined when clean. Server-owned — the UI only reads it.
+   */
+  reviewReasons?: string[];
 }
 
 /**

@@ -13,8 +13,8 @@ import {
 } from "recharts";
 
 import { formatCurrency } from "@/lib/utils";
-import { MONTH_SHORT_VI } from "@/lib/statistics";
-import type { MonthlyTaxPoint } from "@/types/statistics";
+import { timelineShort } from "@/lib/statistics";
+import type { TimelinePoint } from "@/types/statistics";
 
 const COLORS = {
   tax7: "#0ea5e9", // sky-500
@@ -31,20 +31,30 @@ const compactEur = new Intl.NumberFormat("de-DE", {
 });
 
 interface MonthlyTaxBarChartProps {
-  data: MonthlyTaxPoint[];
+  /** Continuous timeline points (ascending); the X axis spans year boundaries. */
+  data: TimelinePoint[];
+  /** Called when a month's bar is clicked — opens the drill-down for that month. */
+  onSelectMonth?: (point: TimelinePoint) => void;
 }
 
 /**
- * Grouped bar chart of tax by month: three bars per month — Thuế 7%, Thuế 19%,
- * Tổng thuế. X axis = month, Y axis = EUR.
+ * Grouped bar chart of tax over a continuous month timeline: three bars per month — Thuế 7%,
+ * Thuế 19%, Tổng thuế. X axis = `MM/YY`, Y axis = EUR. Clicking a bar selects that month (drill-down).
  */
-export function MonthlyTaxBarChart({ data }: MonthlyTaxBarChartProps) {
+export function MonthlyTaxBarChart({ data, onSelectMonth }: MonthlyTaxBarChartProps) {
   const chartData = data.map((p) => ({
-    name: MONTH_SHORT_VI[p.month - 1],
+    name: timelineShort(p),
     "Thuế 7%": p.totalTax7,
     "Thuế 19%": p.totalTax19,
     "Tổng thuế": p.totalTax,
   }));
+
+  const handleBarClick = (_: unknown, index: number) => {
+    const point = data[index];
+    if (point && onSelectMonth) onSelectMonth(point);
+  };
+
+  const cursor = onSelectMonth ? "pointer" : "default";
 
   return (
     <div className="h-80 w-full">
@@ -64,9 +74,9 @@ export function MonthlyTaxBarChart({ data }: MonthlyTaxBarChartProps) {
             contentStyle={{ borderRadius: 8, fontSize: 13 }}
           />
           <Legend wrapperStyle={{ fontSize: 13 }} />
-          <Bar dataKey="Thuế 7%" fill={COLORS.tax7} radius={[3, 3, 0, 0]} />
-          <Bar dataKey="Thuế 19%" fill={COLORS.tax19} radius={[3, 3, 0, 0]} />
-          <Bar dataKey="Tổng thuế" fill={COLORS.total} radius={[3, 3, 0, 0]} />
+          <Bar dataKey="Thuế 7%" fill={COLORS.tax7} radius={[3, 3, 0, 0]} onClick={handleBarClick} style={{ cursor }} />
+          <Bar dataKey="Thuế 19%" fill={COLORS.tax19} radius={[3, 3, 0, 0]} onClick={handleBarClick} style={{ cursor }} />
+          <Bar dataKey="Tổng thuế" fill={COLORS.total} radius={[3, 3, 0, 0]} onClick={handleBarClick} style={{ cursor }} />
         </BarChart>
       </ResponsiveContainer>
     </div>

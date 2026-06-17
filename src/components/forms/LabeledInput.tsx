@@ -15,6 +15,10 @@ interface LabeledInputProps {
   step?: string;
   className?: string;
   mono?: boolean;
+  /** Render the field read-only (e.g. a server-derived value the user can't edit). */
+  disabled?: boolean;
+  /** Small muted helper text shown under the field. */
+  hint?: string;
 }
 
 /** Labeled, controlled input used across the scan forms and review dialogs. */
@@ -29,6 +33,8 @@ export function LabeledInput({
   step,
   className,
   mono = false,
+  disabled = false,
+  hint,
 }: LabeledInputProps) {
   return (
     <div className={cn("grid gap-1.5", className)}>
@@ -44,8 +50,10 @@ export function LabeledInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className={cn(mono && "font-mono")}
+        disabled={disabled}
+        className={cn(mono && "font-mono", disabled && "bg-muted/50 text-muted-foreground")}
       />
+      {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
     </div>
   );
 }

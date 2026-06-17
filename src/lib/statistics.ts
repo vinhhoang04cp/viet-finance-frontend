@@ -1,4 +1,5 @@
-import type { MonthlyTaxPoint } from "@/types/statistics";
+import type { DateRange } from "@/lib/period";
+import type { MonthlyTaxPoint, TimelinePoint } from "@/types/statistics";
 
 /** Short month labels for chart axes (Vietnamese). */
 export const MONTH_SHORT_VI = [
@@ -45,6 +46,82 @@ export function mergeMonthly(
       reportCount: p.reportCount + q.reportCount,
     };
   });
+}
+
+// ── Continuous timeline (rolling N months, may span year boundaries) ─────────────
+
+/** Options for the dashboard "range" selector — the rolling window length, in months. */
+export const TIMELINE_RANGES = [
+  { value: 6, label: "6 tháng gần nhất" },
+  { value: 12, label: "12 tháng gần nhất" },
+  { value: 24, label: "24 tháng gần nhất" },
+] as const;
+
+/** Default rolling window: the last 12 months. */
+export const DEFAULT_TIMELINE_MONTHS = 12;
+
+function pad2(n: number): string {
+  return n.toString().padStart(2, "0");
+}
+
+/**
+ * Inclusive ISO {@link DateRange} for the last `months` calendar months (ending with the current
+ * month), sent verbatim as the timeline endpoints' `from`/`to`. E.g. on 2026-06 with `months = 12`
+ * → `2025-07-01 … 2026-06-30`.
+ */
+export function recentRange(months: number, now: Date = new Date()): DateRange {
+  const end = new Date(now.getFullYear(), now.getMonth(), 1); // first day of current month
+  const start = new Date(end.getFullYear(), end.getMonth() - (months - 1), 1);
+  const lastDay = new Date(end.getFullYear(), end.getMonth() + 1, 0).getDate();
+  return {
+    from: `${start.getFullYear()}-${pad2(start.getMonth() + 1)}-01`,
+    to: `${end.getFullYear()}-${pad2(end.getMonth() + 1)}-${pad2(lastDay)}`,
+  };
+}
+
+/** The inclusive ISO range covering exactly the timeline point's own calendar month. */
+export function monthRangeOf(p: { year: number; month: number }): DateRange {
+  const lastDay = new Date(p.year, p.month, 0).getDate();
+  return {
+    from: `${p.year}-${pad2(p.month)}-01`,
+    to: `${p.year}-${pad2(p.month)}-${pad2(lastDay)}`,
+  };
+}
+
+/** Short axis label for a timeline point, e.g. "06/25". */
+export function timelineShort(p: { year: number; month: number }): string {
+  return `${pad2(p.month)}/${String(p.year).slice(2)}`;
+}
+
+/** Full label for a timeline point / table row, e.g. "Tháng 6/2025". */
+export function timelineLong(p: { year: number; month: number }): string {
+  return `Tháng ${p.month}/${p.year}`;
+}
+
+/**
+ * Sum two timeline series element-wise (the "All" module = invoices + revenues). Both are assumed to
+ * cover the SAME months in the same order (they share the request's `from`/`to`), so we align by index
+ * and keep the left side's `year`/`month`.
+ */
+export function mergeTimeline(a: TimelinePoint[], b: TimelinePoint[]): TimelinePoint[] {
+  return a.map((p, i) => {
+    const q = b[i] ?? p;
+    return {
+      year: p.year,
+      month: p.month,
+      totalTax7: p.totalTax7 + q.totalTax7,
+      totalTax19: p.totalTax19 + q.totalTax19,
+      totalTax: p.totalTax + q.totalTax,
+      totalNetRevenue: p.totalNetRevenue + q.totalNetRevenue,
+      totalGrossRevenue: p.totalGrossRevenue + q.totalGrossRevenue,
+      reportCount: p.reportCount + q.reportCount,
+    };
+  });
+}
+
+/** Window totals derived from a timeline series (drives the stat cards + table footer). */
+export function sumTimeline(points: TimelinePoint[]): Omit<MonthlyTaxPoint, "month"> {
+  return sumMonthly(points as unknown as MonthlyTaxPoint[]);
 }
 
 /** Year totals derived from a monthly series (drives the stat cards + table footer). */

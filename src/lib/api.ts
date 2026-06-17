@@ -4,21 +4,17 @@ import type {
   InvoiceCreateRequest,
   InvoiceTaxStatistics,
 } from "@/types/invoice";
-import type { BatchAcceptedResponse } from "@/types/common";
-import type { MonthlyTaxStatistics } from "@/types/statistics";
+import type { BatchAcceptedResponse, DocumentStatus } from "@/types/common";
+import type {
+  InvoiceLineItem,
+  MonthlyTaxStatistics,
+  TaxTimeline,
+} from "@/types/statistics";
+import { apiFetch } from "@/lib/apiFetch";
+import { API_BASE_URL } from "@/lib/config";
 
-/**
- * Base URL for API calls.
- *
- * Defaults to "" (empty) so the browser issues *same-origin* requests to
- * `/api/v1/...`, which the Next.js rewrite proxy (see next.config.ts) forwards
- * to the Spring Boot backend server-side — no CORS required.
- *
- * Set `NEXT_PUBLIC_API_BASE_URL` (e.g. http://localhost:8080) to bypass the
- * proxy and call the backend directly instead. The REST base path is
- * `/api/v1/invoices` (confirmed against the backend `InvoiceController`).
- */
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
+// Re-export để các module hiện có (revenueApi) tiếp tục import từ "@/lib/api".
+export { API_BASE_URL };
 
 const INVOICES_URL = `${API_BASE_URL}/api/v1/invoices`;
 
@@ -29,7 +25,7 @@ const INVOICES_URL = `${API_BASE_URL}/api/v1/invoices`;
  * `cache: "no-store"` keeps the review queue fresh on every load.
  */
 export async function fetchInvoices(signal?: AbortSignal): Promise<Invoice[]> {
-  const res = await fetch(INVOICES_URL, { cache: "no-store", signal });
+  const res = await apiFetch(INVOICES_URL, { cache: "no-store", signal });
 
   if (!res.ok) {
     throw new Error(
@@ -57,7 +53,7 @@ export async function fetchInvoiceStatistics(
   if (to) params.set("to", to);
   const query = params.toString();
 
-  const res = await fetch(
+  const res = await apiFetch(
     `${INVOICES_URL}/statistics${query ? `?${query}` : ""}`,
     { cache: "no-store", signal }
   );
@@ -81,7 +77,7 @@ export async function fetchInvoiceMonthlyStatistics(
   signal?: AbortSignal
 ): Promise<MonthlyTaxStatistics> {
   const query = year != null ? `?year=${year}` : "";
-  const res = await fetch(`${INVOICES_URL}/statistics/monthly${query}`, {
+  const res = await apiFetch(`${INVOICES_URL}/statistics/monthly${query}`, {
     cache: "no-store",
     signal,
   });
@@ -93,6 +89,61 @@ export async function fetchInvoiceMonthlyStatistics(
   }
 
   return (await res.json()) as MonthlyTaxStatistics;
+}
+
+/**
+ * Fetch the CONTINUOUS invoice tax timeline
+ * (GET /api/v1/invoices/statistics/timeline?from&to) — one point per calendar month in the window,
+ * spanning year boundaries. Drives the dashboard's rolling "last N months" chart.
+ */
+export async function fetchInvoiceTimeline(
+  from: string | null,
+  to: string | null,
+  signal?: AbortSignal
+): Promise<TaxTimeline> {
+  const params = new URLSearchParams();
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const query = params.toString();
+
+  const res = await apiFetch(
+    `${INVOICES_URL}/statistics/timeline${query ? `?${query}` : ""}`,
+    { cache: "no-store", signal }
+  );
+
+  if (!res.ok) {
+    throw new Error(
+      `Failed to load invoice timeline (HTTP ${res.status} ${res.statusText}).`
+    );
+  }
+
+  return (await res.json()) as TaxTimeline;
+}
+
+/**
+ * Fetch the individual invoices in a date window
+ * (GET /api/v1/invoices/statistics/details?from&to) — backs the per-month drill-down table.
+ */
+export async function fetchInvoiceDetails(
+  from: string | null,
+  to: string | null,
+  signal?: AbortSignal
+): Promise<InvoiceLineItem[]> {
+  const params = new URLSearchParams();
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const query = params.toString();
+
+  const res = await apiFetch(
+    `${INVOICES_URL}/statistics/details${query ? `?${query}` : ""}`,
+    { cache: "no-store", signal }
+  );
+
+  if (!res.ok) {
+    throw new Error(await describeError(res, "tải chi tiết hóa đơn"));
+  }
+
+  return (await res.json()) as InvoiceLineItem[];
 }
 
 /**
@@ -114,7 +165,7 @@ export async function updateInvoice(
   id: number,
   changes: EditableInvoiceFields
 ): Promise<Invoice> {
-  const res = await fetch(`${INVOICES_URL}/${id}`, {
+  const res = await apiFetch(`${INVOICES_URL}/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(changes),
@@ -122,6 +173,29 @@ export async function updateInvoice(
 
   if (!res.ok) {
     throw new Error(`Failed to save invoice #${id} (HTTP ${res.status}).`);
+  }
+
+  return (await res.json()) as Invoice;
+}
+
+/**
+ * Transition an invoice's approval status (PATCH /api/v1/invoices/{id}/status).
+ * Mirrors `revenueApi.updateRevenueStatus`. The backend refuses `APPROVED` with
+ * **409** when the invoice still needs review (`requiresManualReview === true`);
+ * `describeError` surfaces that message. Returns the updated invoice.
+ */
+export async function updateInvoiceStatus(
+  id: number,
+  status: DocumentStatus
+): Promise<Invoice> {
+  const res = await apiFetch(`${INVOICES_URL}/${id}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+
+  if (!res.ok) {
+    throw new Error(await describeError(res, `update status of invoice #${id}`));
   }
 
   return (await res.json()) as Invoice;
@@ -139,7 +213,7 @@ export async function extractInvoice(file: File): Promise<Invoice> {
   const form = new FormData();
   form.append("file", file);
 
-  const res = await fetch(`${INVOICES_URL}/extract`, {
+  const res = await apiFetch(`${INVOICES_URL}/extract`, {
     method: "POST",
     body: form, // browser sets the multipart boundary; do not set Content-Type
   });
@@ -163,7 +237,7 @@ export async function extractInvoiceBatch(
   const form = new FormData();
   for (const f of files) form.append("files", f);
 
-  const res = await fetch(`${INVOICES_URL}/extract/batch`, {
+  const res = await apiFetch(`${INVOICES_URL}/extract/batch`, {
     method: "POST",
     body: form,
   });
@@ -182,7 +256,7 @@ export async function extractInvoiceBatch(
 export async function createInvoice(
   payload: InvoiceCreateRequest
 ): Promise<Invoice> {
-  const res = await fetch(INVOICES_URL, {
+  const res = await apiFetch(INVOICES_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

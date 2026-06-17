@@ -45,37 +45,89 @@ and the backend needs no CORS config.
 - **`NEXT_PUBLIC_API_BASE_URL`** (`src/lib/api.ts`, defaults to `""`) — set this to call the backend
   directly and bypass the proxy. Leave empty to use same-origin requests through the rewrite.
 
+## Authentication & multi-tenant session
+
+The app is gated behind login (backend Phase 2 — every business endpoint requires a tenant-scoped JWT).
+Session state lives in **`AuthProvider`** (`lib/auth/AuthContext`, exposed via `useAuth()`):
+`user`, `tenants`, `currentTenant`, `role`, `canWrite` (OWNER/ACCOUNTANT — VIEWER is read-only),
+`isAuthenticated`, `isLoading`, and actions (`login`, `register`, `loginWithGoogle`, `completeOAuthCode`,
+`selectTenant`, `switchTenant`, `createTenant`, `logout`, `refreshProfile`).
+
+- **Token model (hybrid).** Access token (short-lived JWT) is kept in `localStorage` (`lib/auth/storage`)
+  and sent as `Authorization: Bearer`. The **refresh token is an httpOnly cookie set by the backend** —
+  JS can't read it; `refreshTokens()` POSTs `/auth/refresh` with **no body** (`credentials: "same-origin"`)
+  and the browser sends the cookie. `lib/auth/jwt.ts` decodes the JWT client-side (no verification — just
+  to read `tid`/`role`/`exp`); the backend verifies on every request.
+- **`apiFetch` (`lib/apiFetch.ts`) is the central authed fetch** for all business calls (Invoice/Revenue/
+  Tax/Users/Tenants). It attaches the Bearer header, and on a **401 refreshes once** — concurrent 401s are
+  queued so only one `/auth/refresh` fires, then the original requests retry. If refresh fails it clears the
+  token and dispatches the `vf:auth-expired` window event; `AuthProvider` listens, resets state, and
+  redirects to `/auth/login?returnUrl=…`. Auth endpoints themselves (`authApi.ts`) call `fetch` directly,
+  not `apiFetch` (no Bearer / no refresh loop).
+- **Multi-tenant login flow.** `login` → if `tenantSelectionRequired`, a **temp token** (no `tid`) is stored
+  and `{type:"selectTenant", options}` returned → user picks a restaurant (`TenantSelector`) → `selectTenant`
+  → full tokens. Single-tenant → straight in. **OAuth2:** `loginWithGoogle` redirects to the backend
+  authorize URL (NOT through the proxy — uses `NEXT_PUBLIC_BACKEND_URL`); the backend redirects back to
+  `/auth/callback?code=…`, which calls `completeOAuthCode` → `{success | selectTenant | noTenant}`. A Google
+  user with **no** tenant (`noTenant`) lands on `/onboarding` to create one. `switchTenant` re-selects a
+  tenant then hard-reloads `/` (no global cache to clear) with a flash toast.
+- **Route gating (`AppShell` + `RequireAuth`).** `AppShell` (in `layout.tsx`) picks layout by route:
+  `/auth/*` → full-screen public; `/onboarding` → `RequireAuth requireTenant={false}` (authed, tenant not
+  required); everything else → `RequireAuth` (authed **+** tenant) wrapped in `Sidebar` + `Navbar`.
+  `RequireAuth` is a **client guard** (the token is in localStorage, invisible to Next middleware): not
+  authed → `/auth/login`; authed but no tenant → `/onboarding`. `Navbar` has the tenant switcher + user
+  menu (profile / settings / logout); write-only nav items (Scan) are hidden unless `canWrite`.
+- **Settings (`/settings/*`, `lib/settingsApi.ts`):** profile + change-password (`/users/me`(+`/password`)),
+  restaurant (`/tenants/{id}`), and members (`/tenants/{id}/members`, OWNER-gated). Roles render via
+  `ROLE_LABELS` (`types/auth.ts`).
+
 ## Structure
 
 ```
 src/
   app/                       # App Router
     page.tsx                 # "/"  — Invoice approval queue (dashboard + KPI cards)
+    dashboard/page.tsx       # "/dashboard" — tax statistics (charts + monthly table)
+    tax/page.tsx             # "/tax"        — VAT / Zahllast (output − input) + Excel export
     invoices/scan/page.tsx   # "/invoices/scan"  — upload & extract invoices
     revenues/page.tsx        # "/revenues"       — revenue reports dashboard
     revenues/scan/page.tsx   # "/revenues/scan"  — upload & extract Z-Bons
-    layout.tsx, globals.css
+    auth/{login,register,callback}/page.tsx   # public — sign-in / sign-up / OAuth2 code exchange
+    onboarding/page.tsx      # "/onboarding" — create first restaurant (authed, no tenant yet)
+    settings/{profile,restaurant,members}/page.tsx
+    layout.tsx, globals.css  # layout wraps <AuthProvider><AppShell>; <Toaster/> (sonner)
   components/
     invoices/  revenues/     # *Table + *ReviewDialog per domain
     upload/                  # FileDropzone, BatchUpload, ScanModeTabs
-    layout/Sidebar.tsx       # nav (Invoices / Revenue sections)
+    auth/                    # RequireAuth, AuthCard, GoogleButton, TenantSelector, AccessDenied
+    layout/                  # AppShell (route→layout), Sidebar (nav), Navbar (tenant switch + user menu)
+    statistics/             # StatCard, MonthlyTaxBarChart, MonthlyVatBarChart (both clickable), TaxDistributionPieChart, MonthlyTaxTable, TaxSummaryBar, LineItemsTables (drill-down)
+    filters/PeriodFilter.tsx
     forms/LabeledInput.tsx
     StatusBadge.tsx
-    ui/                      # shadcn/ui primitives — regenerate, don't hand-edit
+    ui/                      # shadcn/ui primitives — regenerate, don't hand-edit (incl. dropdown-menu, sonner)
   lib/
-    api.ts                   # invoice REST client + shared describeError()
-    revenueApi.ts            # revenue REST client (reuses api.ts helpers)
+    api.ts                   # invoice REST client + shared describeError() + statistics; re-exports API_BASE_URL
+    revenueApi.ts            # revenue REST client + statistics (reuses api.ts helpers)
+    taxApi.ts                # tax/Zahllast client + Excel download (Bearer via apiFetch)
+    settingsApi.ts           # profile / password / tenant / member management
+    apiFetch.ts              # central authed fetch — attaches Bearer, auto-refreshes on 401
+    config.ts                # API_BASE_URL (no imports → avoids cycles)
+    auth/                    # AuthContext (provider+useAuth), authApi, jwt (decode), storage (token)
+    period.ts  statistics.ts # period→range + monthly merge/sum helpers for the dashboards
     utils.ts                 # cn(), formatCurrency, formatDate
-  types/                     # invoice.ts, revenue.ts, common.ts, page.ts
+  types/                     # invoice.ts, revenue.ts, common.ts, page.ts, auth.ts, tax.ts, statistics.ts
 ```
 
-All pages are Client Components (`"use client"`) that fetch on mount with an `AbortController`,
-holding data in `useState`. There is no global store or data-fetching library.
+Most pages are Client Components (`"use client"`) that fetch on mount with an `AbortController`,
+holding data in `useState`. The **one** global store is `AuthProvider` (React Context, `lib/auth/AuthContext`)
+holding the session (user, tenants, current tenant, role); there is no data-fetching library.
 
 ## API layer & the human-in-the-loop flow
 
-`src/lib/api.ts` (invoices) and `src/lib/revenueApi.ts` (revenues) wrap `fetch`. Both mirror the
-same backend pattern:
+`src/lib/api.ts` (invoices) and `src/lib/revenueApi.ts` (revenues) are the domain REST clients
+(`taxApi.ts` + `settingsApi.ts` join them). All business calls go through **`apiFetch`** (Bearer +
+auto-refresh — see Authentication above), not raw `fetch`. Both mirror the same backend pattern:
 
 1. **Extract** (`POST .../extract`, multipart) → returns the structured entity **without persisting**
    (backend runs Azure OCR + the LLM parse). Let the browser set the multipart boundary — never set
@@ -141,6 +193,34 @@ When changing either domain's contract, keep `types/*` and the matching `lib/*Ap
 with the backend DTOs/endpoints — the two domains intentionally differ, so don't copy one onto the
 other.
 
+## Tax & statistics dashboards
+
+Two read-only analytics pages, both reusing `components/statistics/*` (`StatCard`, charts, tables) and the
+`components/filters/PeriodFilter` + `lib/period.ts` (`periodToRange`, `availableYears`) helpers.
+
+- **`/dashboard` — tax statistics (rolling timeline + drill-down).** Merges the two modules' **continuous
+  timeline** (`fetchInvoiceTimeline` from `api.ts`, `fetchRevenueTimeline` from `revenueApi.ts`, both
+  `GET …/statistics/timeline?from&to[&status]`) into one `TimelinePoint[]` (`types/statistics.ts`) via
+  `mergeTimeline`. Filters: module (all/invoice/revenue), status, and a **range** selector (`TIMELINE_RANGES`
+  = 6/12/24 months; default 12) → `recentRange(months)` computes the rolling `{from,to}`. Renders the
+  (clickable) `MonthlyTaxBarChart`, `TaxDistributionPieChart`, `MonthlyTaxTable`; totals via `sumTimeline`.
+- **`/tax` — VAT / Zahllast (period summary + timeline + drill-down).** Keeps the `PeriodFilter`-driven
+  Zahllast summary (`fetchVatCalculation`) and adds a rolling **timeline** chart (`fetchVatTimeline`,
+  `MonthlyVatBarChart`, own range selector); `downloadTaxExcel` (`/tax/export`). `VatCalculation`
+  (`types/tax.ts`) mirrors the backend record: output − input tax split 7%/19%, `totalVatPayable` +
+  `VatStatus` (`PAYABLE`/`REFUNDABLE`/`BALANCED`). **`status` defaults to `APPROVED`** (official Zahllast);
+  the page exposes it as a filter (APPROVED = chính thức, PENDING = ước tính).
+- **Per-month drill-down (both pages).** Clicking a bar (`onSelectMonth`) or a `MonthlyTaxTable` row opens
+  a detail panel that fetches that month's rows — `fetchInvoice/RevenueDetails` (dashboard, by module) or
+  `fetchVatDetails` (tax, both sides) — and renders `InvoiceLineItemsTable` / `RevenueLineItemsTable`
+  (`components/statistics/LineItemsTables.tsx`). The selected month → its `{from,to}` via `monthRangeOf`
+  (dashboard) or the point's own `periodStart`/`periodEnd` (tax). `MonthlyTaxStatistics`/`mergeMonthly`/
+  `emptyMonthly` (the old year-bucketed `/monthly` helpers) remain in `lib/statistics.ts` but the
+  dashboards now use the timeline variants.
+- **Excel download caveat.** The export needs a `Bearer` header, so it can't be a plain `<a download>` —
+  `downloadTaxExcel` fetches through `apiFetch` (carrying auth), reads the blob, parses the filename from
+  `Content-Disposition` (prefers `filename*=UTF-8''…`), and triggers download via an object URL.
+
 ## Localization (Vietnamese UI)
 
 The UI is being localized to **pure Vietnamese**. Localized so far: the whole **Revenue** surface
@@ -175,8 +255,9 @@ messages, `BatchAcceptedResponse.message`) stay English — they are not localiz
 
 - Use the `@/` alias, not deep relative paths. Compose classes with `cn()`.
 - Add shadcn primitives via the CLI into `src/components/ui/`; don't hand-edit generated files.
-- Keep all REST calls in `lib/api.ts` / `lib/revenueApi.ts` — components import these functions
-  rather than calling `fetch` directly.
+- Keep all REST calls in the `lib/*Api.ts` clients (`api.ts` / `revenueApi.ts` / `taxApi.ts` /
+  `settingsApi.ts` / `auth/authApi.ts`) — components import these functions rather than calling `fetch`
+  directly. Business clients fetch via `apiFetch` (auth + refresh); only `authApi.ts` uses raw `fetch`.
 - Domain types in `src/types/*` mirror the backend DTOs; keep them in sync when the backend contract
   changes (see the Invoice vs. Revenue section above — the two domains intentionally differ).
 - **Localization:** translate display text only — never binding keys, props, or API values (see the
